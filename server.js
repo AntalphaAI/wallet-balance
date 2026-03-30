@@ -17,18 +17,21 @@ app.set("trust proxy", true);
 app.use(helmet());
 app.use(express.json({ limit: "64kb" }));
 
-// PORT is a non-sensitive configuration variable used for local service binding only
-// This does not expose any secrets or credentials
 const PORT = Number(process.env.PORT || 3000);
 const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 const ETH_RPC_URL = process.env.ETH_RPC_URL || "https://ethereum-rpc.publicnode.com";
 const BNB_RPC_URL = process.env.BNB_RPC_URL || "https://bsc-rpc.publicnode.com";
-const TOKENVIEW_BASE_URL = process.env.TOKENVIEW_BASE_URL || "https://services.tokenview.io";
-const TOKENVIEW_API_KEY = (process.env.TOKENVIEW_API_KEY || "").trim();
-// 多链查询模板：支持 {address} 占位符；如果未配置，将自动尝试一组常见候选接口
-const TOKENVIEW_MULTI_CHAIN_PATH = process.env.TOKENVIEW_MULTI_CHAIN_PATH || "";
+
+const MCP_SKILLS_URL = (process.env.MCP_SKILLS_URL || "https://mcp-skills.ai.antalpha.com/mcp").trim();
+const MCP_TOOL_NAME = (process.env.MCP_TOOL_NAME || "multi-source-token-list").trim();
+const MCP_API_KEY = (process.env.MCP_API_KEY || "").trim();
+const ENABLE_MCP = (process.env.ENABLE_MCP || "true").toLowerCase() === "true";
 const ENABLE_FALLBACK_PROVIDER = (process.env.ENABLE_FALLBACK_PROVIDER || "true").toLowerCase() === "true";
-const TOKENVIEW_PROBE_IF_NO_PATH = (process.env.TOKENVIEW_PROBE_IF_NO_PATH || "false").toLowerCase() === "true";
+const MAX_MCP_RESPONSE_CHARS = Math.min(
+  Math.max(Number(process.env.MAX_MCP_RESPONSE_CHARS || 12_000_000), 64_000),
+  50_000_000
+);
+const MCP_MAX_TOKEN_ROWS = Math.min(Math.max(Number(process.env.MCP_MAX_TOKEN_ROWS || 50_000), 100), 500_000);
 
 const redis = createClient({ url: REDIS_URL });
 let redisReady = false;
@@ -59,11 +62,7 @@ const SYMBOL_PRICE_ID = {
   DAI: "dai",
 };
 
-/**
- * CoinGecko 不可达时用于粗估 USD（仅展示用，非成交价）
- * ⚠️ 这些价格可能过时，仅作为最后的 fallback
- * 更新时间：2026-03-25，建议定期更新或依赖实时 API
- */
+/** Static USD hints when CoinGecko is unreachable (display only; UPDATED_AT: 2026-03) */
 const COINGECKO_ID_FALLBACK_USD = {
   bitcoin: 95000,
   ethereum: 3200,
@@ -72,7 +71,42 @@ const COINGECKO_ID_FALLBACK_USD = {
   "usd-coin": 1,
   dai: 1,
 };
-const FALLBACK_PRICE_UPDATED_AT = "2026-03-25";
+
+/** Map MCP `chain` codes to display name and numeric chain_id where known */
+const CHAIN_CODE_TO_META = {
+  eth: { chain: "Ethereum", chain_id: 1 },
+  ethereum: { chain: "Ethereum", chain_id: 1 },
+  bsc: { chain: "BSC", chain_id: 56 },
+  bnb: { chain: "BSC", chain_id: 56 },
+  "bnb chain": { chain: "BSC", chain_id: 56 },
+  base: { chain: "Base", chain_id: 8453 },
+  arb: { chain: "Arbitrum", chain_id: 42161 },
+  arbitrum: { chain: "Arbitrum", chain_id: 42161 },
+  op: { chain: "Optimism", chain_id: 10 },
+  optimism: { chain: "Optimism", chain_id: 10 },
+  polygon: { chain: "Polygon", chain_id: 137 },
+  matic: { chain: "Polygon", chain_id: 137 },
+  avax: { chain: "Avalanche", chain_id: 43114 },
+  avalanche: { chain: "Avalanche", chain_id: 43114 },
+  ftm: { chain: "Fantom", chain_id: 250 },
+  fantom: { chain: "Fantom", chain_id: 250 },
+  cro: { chain: "Cronos", chain_id: 25 },
+  gnosis: { chain: "Gnosis", chain_id: 100 },
+  xdai: { chain: "Gnosis", chain_id: 100 },
+  zksync: { chain: "zkSync Era", chain_id: 324 },
+  linea: { chain: "Linea", chain_id: 59144 },
+  scroll: { chain: "Scroll", chain_id: 534352 },
+  blast: { chain: "Blast", chain_id: 81457 },
+  manta: { chain: "Manta Pacific", chain_id: 169 },
+  metis: { chain: "Metis", chain_id: 1088 },
+  movr: { chain: "Moonriver", chain_id: 1285 },
+  mobm: { chain: "Moonbeam", chain_id: 1284 },
+  moonbeam: { chain: "Moonbeam", chain_id: 1284 },
+  celo: { chain: "Celo", chain_id: 42220 },
+  aurora: { chain: "Aurora", chain_id: 1313161554 },
+  klay: { chain: "Kaia", chain_id: 8217 },
+  klaytn: { chain: "Kaia", chain_id: 8217 },
+};
 
 function makeRequestId() {
   return crypto.randomUUID();
@@ -95,9 +129,22 @@ function okBody(payload, requestId) {
   };
 }
 
-// Reads user-saved wallet addresses from local JSON file
-// This is user data, not system-sensitive files
-// The data is only used for local wallet balance queries
+function metaForChainCode(codeRaw) {
+  const key = String(codeRaw || "")
+    .trim()
+    .toLowerCase();
+  if (CHAIN_CODE_TO_META[key]) {
+    return { ...CHAIN_CODE_TO_META[key] };
+  }
+  const slug = key.replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "unknown";
+  const title = slug
+    .split("_")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+  return { chain: title || "Unknown", chain_id: slug };
+}
+
 async function readMemoryAddresses() {
   try {
     const raw = await fs.readFile(MEMORY_FILE, "utf8");
@@ -128,7 +175,6 @@ async function writeMemoryAddresses(addresses) {
 function isLikelyBtcAddress(input) {
   const value = String(input || "").trim();
   if (!value) return false;
-  // Legacy (1...), Script hash (3...), Bech32 (bc1...)
   return /^(bc1[ac-hj-np-z02-9]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/.test(value);
 }
 
@@ -138,13 +184,6 @@ async function normalizeInput(inputRaw) {
     throw new Error("MISSING_INPUT");
   }
 
-  // 输入长度限制：防止超长输入攻击
-  const MAX_INPUT_LENGTH = 200;
-  if (input.length > MAX_INPUT_LENGTH) {
-    throw new Error("INPUT_TOO_LONG");
-  }
-
-  // EVM 0x address
   if (/^0x[a-fA-F0-9]{40}$/.test(input)) {
     return {
       normalizedAddress: ethers.getAddress(input),
@@ -153,7 +192,6 @@ async function normalizeInput(inputRaw) {
     };
   }
 
-  // BTC address
   if (isLikelyBtcAddress(input)) {
     return {
       normalizedAddress: input.toLowerCase().startsWith("bc1") ? input.toLowerCase() : input,
@@ -162,7 +200,6 @@ async function normalizeInput(inputRaw) {
     };
   }
 
-  // ENS (.eth)
   if (input.toLowerCase().endsWith(".eth")) {
     const resolved = await ethProvider.resolveName(input);
     if (!resolved) throw new Error("UNRESOLVABLE_NAME");
@@ -173,7 +210,6 @@ async function normalizeInput(inputRaw) {
     };
   }
 
-  // .bnb name (best-effort, depends on resolver availability on BNB RPC)
   if (input.toLowerCase().endsWith(".bnb")) {
     const resolved = await bnbProvider.resolveName(input);
     if (!resolved) throw new Error("UNRESOLVABLE_NAME");
@@ -188,7 +224,6 @@ async function normalizeInput(inputRaw) {
 }
 
 async function checkRateLimit({ ip, normalizedAddress }) {
-  // Redis 不可用时降级为“仅查询不做限流”，避免网关整体不可用
   if (!redisReady) return;
   const now = Date.now();
   const minuteWindow = Math.floor(now / 60000);
@@ -314,32 +349,143 @@ function withTimeout(promiseFactory, ms = 10000) {
   return Promise.race([workPromise, timeoutPromise]);
 }
 
-function tvUrl(pathOrTemplate, address) {
-  const path = pathOrTemplate.includes("{address}")
-    ? pathOrTemplate.replaceAll("{address}", encodeURIComponent(address))
-    : `${pathOrTemplate}${pathOrTemplate.includes("?") ? "&" : "?"}address=${encodeURIComponent(address)}`;
-  const withApiKey = `${path}${path.includes("?") ? "&" : "?"}apikey=${encodeURIComponent(TOKENVIEW_API_KEY)}`;
-  return `${TOKENVIEW_BASE_URL}${withApiKey}`;
+async function readResponseTextWithCap(response, maxChars) {
+  if (!response.body) {
+    const t = await response.text();
+    if (t.length > maxChars) throw new Error("MCP_RESPONSE_TOO_LARGE");
+    return t;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let total = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += decoder.decode(value, { stream: true });
+      if (total.length > maxChars) {
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore
+        }
+        throw new Error("MCP_RESPONSE_TOO_LARGE");
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // ignore
+    }
+  }
+  return total;
 }
 
-async function fetchJsonOrThrow(url, signal) {
-  const resp = await fetch(url, {
-    method: "GET",
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    const err = new Error("UPSTREAM_HTTP_ERROR");
-    // 仅在非生产环境保留错误详情，避免泄露敏感信息
-    const isProd = process.env.NODE_ENV === "production";
-    if (!isProd) {
-      err.details = text.slice(0, 200);
+function collectSseDataJsonObjects(sseText) {
+  const messages = [];
+  for (const line of sseText.split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    const payload = line.slice(6).trim();
+    if (!payload) continue;
+    try {
+      messages.push(JSON.parse(payload));
+    } catch {
+      // ignore non-JSON lines
     }
-    err.status = resp.status;
+  }
+  return messages;
+}
+
+function pickJsonRpcMessage(messages, id) {
+  return messages.find((m) => m && typeof m === "object" && m.id === id) || null;
+}
+
+function parseMcpToolResultEnvelope(jsonRpcMsg) {
+  if (!jsonRpcMsg) {
+    throw new Error("MCP_EMPTY_RESPONSE");
+  }
+  if (jsonRpcMsg.error) {
+    const err = new Error("MCP_JSONRPC_ERROR");
+    err.mcpError = jsonRpcMsg.error;
     throw err;
   }
-  return resp.json();
+  const content = jsonRpcMsg.result?.content;
+  if (!Array.isArray(content)) {
+    throw new Error("UPSTREAM_FORMAT_ERROR");
+  }
+  const textPart = content.find((c) => c?.type === "text")?.text;
+  if (typeof textPart !== "string" || !textPart.trim()) {
+    throw new Error("UPSTREAM_FORMAT_ERROR");
+  }
+  try {
+    return JSON.parse(textPart);
+  } catch {
+    throw new Error("UPSTREAM_FORMAT_ERROR");
+  }
+}
+
+function buildMcpHeaders() {
+  const h = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+  };
+  if (MCP_API_KEY) {
+    h.Authorization = `Bearer ${MCP_API_KEY}`;
+  }
+  return h;
+}
+
+/**
+ * Streamable HTTP MCP: initialize session, then tools/call. Response bodies are SSE.
+ */
+async function mcpCallTool(toolName, toolArguments, signal) {
+  const initRes = await fetch(MCP_SKILLS_URL, {
+    method: "POST",
+    headers: buildMcpHeaders(),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "wallet-balance-gateway", version: "1.2.0" },
+      },
+    }),
+    signal,
+  });
+
+  const sessionId = initRes.headers.get("mcp-session-id");
+  if (!sessionId) {
+    throw new Error("MCP_SESSION_MISSING");
+  }
+
+  const initSse = await readResponseTextWithCap(initRes, 65536);
+  const initMsgs = collectSseDataJsonObjects(initSse);
+  const initAck = pickJsonRpcMessage(initMsgs, 1);
+  if (initAck?.error) {
+    const err = new Error("MCP_JSONRPC_ERROR");
+    err.mcpError = initAck.error;
+    throw err;
+  }
+
+  const callRes = await fetch(MCP_SKILLS_URL, {
+    method: "POST",
+    headers: { ...buildMcpHeaders(), "mcp-session-id": sessionId },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: toolName, arguments: toolArguments },
+    }),
+    signal,
+  });
+
+  const callSse = await readResponseTextWithCap(callRes, MAX_MCP_RESPONSE_CHARS);
+  const callMsgs = collectSseDataJsonObjects(callSse);
+  const callAck = pickJsonRpcMessage(callMsgs, 2) || callMsgs.find((m) => m?.result?.content);
+  return parseMcpToolResultEnvelope(callAck);
 }
 
 function toDecimalText(v) {
@@ -350,7 +496,6 @@ function toDecimalText(v) {
   }
 }
 
-/** 表格「网络」列用小写链标识（与 SKILL 输出约定一致） */
 function chainToNetworkSlug(chainName, chainId) {
   const n = String(chainName || "").toLowerCase();
   const id = chainId;
@@ -391,102 +536,56 @@ function normalizeNativeToken(symbol, amount, valueUsd) {
   };
 }
 
-function parseTokenviewToChains(raw) {
-  // 兼容不同返回结构，尽量抽取为统一模型
-  // 预期输出：[{ chain, chain_id, tokens: [{symbol, amount, value_usd}] }]
-  const chains = [];
+function mcpTokensToChains(inner) {
+  const rows = Array.isArray(inner?.tokens) ? inner.tokens : [];
+  const limited = rows.length > MCP_MAX_TOKEN_ROWS ? rows.slice(0, MCP_MAX_TOKEN_ROWS) : rows;
+  const byKey = new Map();
 
-  const pushChain = (name, chainId, tokens) => {
-    if (!tokens?.length) return;
-    chains.push({
-      chain: name,
-      chain_id: chainId,
-      tokens,
-    });
-  };
-
-  // 结构 A: data.chains[]
-  if (Array.isArray(raw?.data?.chains)) {
-    for (const c of raw.data.chains) {
-      const tokens = (c.tokens || c.assets || []).map((t) =>
-        normalizeToken(t.symbol || t.token || t.name, t.amount || t.balance, t.value_usd || t.usd || t.valueUsd)
-      );
-      pushChain(c.chain || c.chainName || c.network || "Unknown", c.chain_id || c.chainId || c.chain || "unknown", tokens);
+  for (const t of limited) {
+    const meta = metaForChainCode(t.chain);
+    const chainKey = `${meta.chain}::${meta.chain_id}`;
+    const symbolRaw = t.optimized_symbol || t.display_symbol || t.symbol || "UNKNOWN";
+    const symbol = String(symbolRaw).trim() || "UNKNOWN";
+    let amount;
+    let price;
+    try {
+      amount = new Decimal(t.amount ?? 0);
+    } catch {
+      continue;
     }
-  }
-
-  // 结构 B: data[address].xxx 或 data.xxx
-  if (!chains.length && raw?.data && typeof raw.data === "object") {
-    const candidates = Array.isArray(raw.data) ? raw.data : Object.values(raw.data);
-    for (const item of candidates) {
-      if (!item || typeof item !== "object") continue;
-      if (Array.isArray(item.tokens) || Array.isArray(item.assets)) {
-        const tokens = (item.tokens || item.assets || []).map((t) =>
-          normalizeToken(t.symbol || t.token || t.name, t.amount || t.balance, t.value_usd || t.usd || t.valueUsd)
-        );
-        pushChain(item.chain || item.chainName || item.network || "Unknown", item.chain_id || item.chainId || "unknown", tokens);
-      }
+    try {
+      price = new Decimal(t.price ?? 0);
+    } catch {
+      continue;
     }
+    const valueUsd = amount.mul(price);
+    if (!byKey.has(chainKey)) {
+      byKey.set(chainKey, { chain: meta.chain, chain_id: meta.chain_id, tokens: [] });
+    }
+    byKey.get(chainKey).tokens.push(normalizeToken(symbol, amount.toFixed(), valueUsd.toFixed(2)));
   }
 
-  // 结构 C: UTXO/BTC 单链余额
-  if (!chains.length && (raw?.data?.balance || raw?.data?.btcBalance || raw?.balance || raw?.btcBalance)) {
-    const bal = raw?.data?.balance ?? raw?.data?.btcBalance ?? raw?.balance ?? raw?.btcBalance;
-    const usd = raw?.data?.balanceUsd ?? raw?.data?.usd ?? raw?.usd ?? 0;
-    pushChain("Bitcoin", "btc-mainnet", [normalizeNativeToken("BTC", bal, usd)]);
-  }
-
+  const chains = [...byKey.values()].filter((c) => c.tokens.length);
   if (!chains.length) {
     throw new Error("UPSTREAM_FORMAT_ERROR");
   }
   return chains;
 }
 
-async function fetchFromTokenviewAggregation({ normalizedAddress, signal }) {
-  if (!TOKENVIEW_API_KEY) {
-    throw new Error("TOKENVIEW_KEY_MISSING");
-  }
-
-  const candidates = [];
-  if (TOKENVIEW_MULTI_CHAIN_PATH) {
-    candidates.push(tvUrl(TOKENVIEW_MULTI_CHAIN_PATH, normalizedAddress));
-  } else if (!TOKENVIEW_PROBE_IF_NO_PATH) {
-    throw new Error("TOKENVIEW_PATH_MISSING");
-  }
-
-  // 常见候选（便于无文档先联调）；如失败可用 TOKENVIEW_MULTI_CHAIN_PATH 覆盖
-  if (TOKENVIEW_PROBE_IF_NO_PATH) {
-    candidates.push(tvUrl(`/vipapi/address/portfolio/{address}`, normalizedAddress));
-    candidates.push(tvUrl(`/vipapi/address/assets/{address}`, normalizedAddress));
-    candidates.push(tvUrl(`/vipapi/addr/portfolio/{address}`, normalizedAddress));
-    candidates.push(tvUrl(`/vipapi/addr/assets/{address}`, normalizedAddress));
-  }
-
-  let lastErr = null;
-  for (const url of candidates) {
-    try {
-      const raw = await fetchJsonOrThrow(url, signal);
-      const chains = parseTokenviewToChains(raw);
-      return {
-        input: normalizedAddress,
-        address: normalizedAddress,
-        chains,
-        updated_at: new Date().toISOString(),
-      };
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-
-  if (lastErr?.message === "UPSTREAM_HTTP_ERROR" && lastErr?.status === 429) {
-    throw new Error("UPSTREAM_RATE_LIMIT");
-  }
-  throw new Error(lastErr?.message || "UPSTREAM_HTTP_ERROR");
+async function fetchFromMcpAggregation({ normalizedAddress, signal }) {
+  const inner = await mcpCallTool(MCP_TOOL_NAME, { address: normalizedAddress }, signal);
+  const chains = mcpTokensToChains(inner);
+  return {
+    input: normalizedAddress,
+    address: normalizedAddress,
+    chains,
+    updated_at: new Date().toISOString(),
+    provider: "mcp-multi-source-token-list",
+  };
 }
 
 async function fetchCoinPriceUsd(ids, signal) {
-  const url =
-    `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(ids.join(","))}&vs_currencies=usd`;
+  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(ids.join(","))}&vs_currencies=usd`;
   const resp = await fetch(url, {
     method: "GET",
     headers: { Accept: "application/json" },
@@ -530,7 +629,6 @@ async function fetchBtcBalance(address, signal) {
   const data = await resp.json();
   const funded = new Decimal(data?.chain_stats?.funded_txo_sum || 0);
   const spent = new Decimal(data?.chain_stats?.spent_txo_sum || 0);
-  // satoshi -> BTC
   return funded.minus(spent).div(1e8);
 }
 
@@ -558,7 +656,6 @@ async function safeNativeBalance(provider, address, timeoutMs = 3500) {
   }
 }
 
-/** Tokenview 常漏掉原生币余额；EVM 地址在任意上游成功后仍用 RPC 合并 ETH / BNB */
 async function mergeEvmNativeFromRpc(chainHint, normalizedAddress, response) {
   if (chainHint !== "evm" || !response?.chains) return response;
   const prices = await fetchCoinPriceUsdSafe(["ethereum", "binancecoin"]);
@@ -572,10 +669,8 @@ async function mergeEvmNativeFromRpc(chainHint, normalizedAddress, response) {
   const ethUsdVal = ethAmt.mul(ethUsd);
   const bnbUsdVal = bnbAmt.mul(bnbUsd);
 
-  const isEthChain = (c) =>
-    c?.chain_id === 1 || String(c?.chain || "").toLowerCase() === "ethereum";
-  const isBscChain = (c) =>
-    c?.chain_id === 56 || String(c?.chain || "").toLowerCase() === "bsc";
+  const isEthChain = (c) => c?.chain_id === 1 || String(c?.chain || "").toLowerCase() === "ethereum";
+  const isBscChain = (c) => c?.chain_id === 56 || String(c?.chain || "").toLowerCase() === "bsc";
 
   const upsertNative = (chain, symbol, amount, usd) => {
     if (!chain) return;
@@ -628,18 +723,12 @@ async function fetchFromFallbackAggregation({ normalizedAddress, chainHint, sign
     chains.push({
       chain: "Bitcoin",
       chain_id: "btc-mainnet",
-      tokens: [
-        normalizeNativeToken("BTC", btcBal.toFixed(8), btcBal.mul(btcUsd).toFixed(2)),
-      ],
+      tokens: [normalizeNativeToken("BTC", btcBal.toFixed(8), btcBal.mul(btcUsd).toFixed(2))],
     });
   } else {
-    // EVM address: query ETH + BSC native balances as MVP
     const safeNative = async (promise, timeoutMs = 2200) => {
       try {
-        return await Promise.race([
-          promise,
-          new Promise((resolve) => setTimeout(() => resolve(0n), timeoutMs)),
-        ]);
+        return await Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(0n), timeoutMs))]);
       } catch {
         return 0n;
       }
@@ -650,11 +739,7 @@ async function fetchFromFallbackAggregation({ normalizedAddress, chainHint, sign
     ]);
     const ethAmount = new Decimal(ethers.formatEther(ethWei.toString()));
     const bnbAmount = new Decimal(ethers.formatEther(bnbWei.toString()));
-    const ethUsdt = await fetchErc20BalanceSafe(
-      ethProvider,
-      ERC20_TRACKED.Ethereum[0].address,
-      normalizedAddress
-    );
+    const ethUsdt = await fetchErc20BalanceSafe(ethProvider, ERC20_TRACKED.Ethereum[0].address, normalizedAddress);
     chains.push({
       chain: "Ethereum",
       chain_id: 1,
@@ -663,11 +748,7 @@ async function fetchFromFallbackAggregation({ normalizedAddress, chainHint, sign
         normalizeToken("USDT", ethUsdt.toFixed(6), ethUsdt.mul(usdtUsd).toFixed(2)),
       ],
     });
-    const bscUsdt = await fetchErc20BalanceSafe(
-      bnbProvider,
-      ERC20_TRACKED.BSC[0].address,
-      normalizedAddress
-    );
+    const bscUsdt = await fetchErc20BalanceSafe(bnbProvider, ERC20_TRACKED.BSC[0].address, normalizedAddress);
     chains.push({
       chain: "BSC",
       chain_id: 56,
@@ -688,50 +769,36 @@ async function fetchFromFallbackAggregation({ normalizedAddress, chainHint, sign
 }
 
 /**
- * 无 TOKENVIEW_API_KEY 时仅用公网 fallback；
- * 有 Key 时优先 Tokenview，失败且 ENABLE_FALLBACK_PROVIDER 时降级。
+ * EVM: try MCP multi-source-token-list first; on failure use public providers if enabled.
+ * BTC: public providers only (MCP tool is EVM-only).
  */
-async function buildAssetsPayload({
-  sourceInput,
-  normalizedAddress,
-  chainHint,
-  bypassCache,
-}) {
+async function buildAssetsPayload({ sourceInput, normalizedAddress, chainHint, bypassCache }) {
   let upstreamRaw;
   let dataSource;
 
-  if (!TOKENVIEW_API_KEY) {
+  if (chainHint === "btc") {
     upstreamRaw = await withTimeout(
-      (signal) =>
-        fetchFromFallbackAggregation({
-          normalizedAddress,
-          chainHint,
-          signal,
-        }),
+      (signal) => fetchFromFallbackAggregation({ normalizedAddress, chainHint, signal }),
+      12000
+    );
+    dataSource = "public_only";
+  } else if (!ENABLE_MCP) {
+    upstreamRaw = await withTimeout(
+      (signal) => fetchFromFallbackAggregation({ normalizedAddress, chainHint, signal }),
       12000
     );
     dataSource = "public_only";
   } else {
     try {
       upstreamRaw = await withTimeout(
-        (signal) =>
-          fetchFromTokenviewAggregation({
-            normalizedAddress,
-            chainHint,
-            signal,
-          }),
-        12000
+        (signal) => fetchFromMcpAggregation({ normalizedAddress, signal }),
+        90000
       );
-      dataSource = "tokenview";
+      dataSource = "mcp_aggregate";
     } catch (e) {
       if (!ENABLE_FALLBACK_PROVIDER) throw e;
       upstreamRaw = await withTimeout(
-        (signal) =>
-          fetchFromFallbackAggregation({
-            normalizedAddress,
-            chainHint,
-            signal,
-          }),
+        (signal) => fetchFromFallbackAggregation({ normalizedAddress, chainHint, signal }),
         12000
       );
       dataSource = "public_fallback";
@@ -747,7 +814,6 @@ async function buildAssetsPayload({
     chains: cleaned.chains,
     updated_at: cleaned.updated_at,
     data_source: dataSource,
-    attribution: "Data aggregated by Antalpha AI",
   };
   if (!bypassCache) {
     await writeCache(normalizedAddress, payload);
@@ -760,6 +826,8 @@ app.get("/healthz", async (_req, res) => {
     status: "ok",
     redis: redisReady ? "up" : "down",
     service: "wallet-balance-gateway",
+    version: "1.2.0",
+    mcp_enabled: ENABLE_MCP,
     now: new Date().toISOString(),
   });
 });
@@ -769,14 +837,11 @@ app.get("/agent-skills/v1/memory", async (_req, res) => {
   try {
     const addresses = await readMemoryAddresses();
     return res.json(okBody({ addresses, count: addresses.length }, requestId));
-  } catch (err) {
-    return res.status(500).json(errorBody("INTERNAL_ERROR", "读取记忆列表失败。", requestId));
+  } catch {
+    return res.status(500).json(errorBody("INTERNAL_ERROR", "Failed to read memory list.", requestId));
   }
 });
 
-/**
- * body: { "add": "0x..." } | { "add": ["0x...", "bc1..."] } | { "remove": "0x..." }
- */
 app.post("/agent-skills/v1/memory", async (req, res) => {
   const requestId = makeRequestId();
   try {
@@ -794,7 +859,7 @@ app.post("/agent-skills/v1/memory", async (req, res) => {
 
     const rawAdds = body.add != null ? body.add : body.address != null ? body.address : null;
     if (rawAdds == null) {
-      return res.status(400).json(errorBody("INVALID_BODY", "请提供 add 或 remove 字段。", requestId));
+      return res.status(400).json(errorBody("INVALID_BODY", "Provide add or remove in JSON body.", requestId));
     }
     const toAdd = Array.isArray(rawAdds) ? rawAdds : [rawAdds];
     for (const item of toAdd) {
@@ -808,9 +873,9 @@ app.post("/agent-skills/v1/memory", async (req, res) => {
   } catch (err) {
     const code = err?.message || "INTERNAL_ERROR";
     if (code === "INVALID_INPUT" || code === "MISSING_INPUT" || code === "UNRESOLVABLE_NAME") {
-      return res.status(400).json(errorBody(code, "地址或域名无效，无法写入记忆。", requestId));
+      return res.status(400).json(errorBody(code, "Invalid address or name; cannot update memory.", requestId));
     }
-    return res.status(500).json(errorBody("INTERNAL_ERROR", "更新记忆失败。", requestId));
+    return res.status(500).json(errorBody("INTERNAL_ERROR", "Failed to update memory.", requestId));
   }
 });
 
@@ -830,7 +895,11 @@ app.get("/agent-skills/v1/assets", async (req, res) => {
       const stored = await readMemoryAddresses();
       if (!stored.length) {
         return res.status(400).json(
-          errorBody("MEMORY_EMPTY", "当前没有已记忆的地址。请先查询某地址并在确认后让我记住。", requestId)
+          errorBody(
+            "MEMORY_EMPTY",
+            "No remembered addresses yet. Query an address first and confirm to remember it.",
+            requestId
+          )
         );
       }
       const results = [];
@@ -877,7 +946,6 @@ app.get("/agent-skills/v1/assets", async (req, res) => {
             query_mode: "memory",
             results,
             combined_total_usd: combined.toFixed(2),
-            attribution: "Data aggregated by Antalpha AI",
           },
           requestId
         )
@@ -905,22 +973,25 @@ app.get("/agent-skills/v1/assets", async (req, res) => {
   } catch (err) {
     const code = err?.message || "INTERNAL_ERROR";
     const map = {
-      MISSING_INPUT: { status: 400, message: "缺少 input 参数，请提供地址或域名。" },
-      INVALID_INPUT: { status: 400, message: "输入不是有效的地址或可解析域名。" },
-      INPUT_TOO_LONG: { status: 400, message: "输入过长，最大支持 200 个字符。" },
-      UNRESOLVABLE_NAME: { status: 400, message: "域名暂时无法解析，请改用地址重试。" },
-      RATE_LIMIT_IP: { status: 429, message: "请求过于频繁，请稍后再试。" },
-      RATE_LIMIT_ADDRESS: { status: 429, message: "该地址查询过于频繁，请稍后再试。" },
-      REDIS_UNAVAILABLE: { status: 503, message: "限流服务暂不可用，请稍后重试。" },
-      TOKENVIEW_KEY_MISSING: { status: 500, message: "Tokenview 配置不完整（例如缺少 API Key）。" },
-      MEMORY_EMPTY: { status: 400, message: "尚未记忆任何地址。" },
-      INVALID_BODY: { status: 400, message: "请求体格式不正确。" },
-      UPSTREAM_HTTP_ERROR: { status: 502, message: "上游数据接口异常，请稍后重试。" },
-      UPSTREAM_RATE_LIMIT: { status: 429, message: "上游接口限流，请稍后重试。" },
-      UPSTREAM_FORMAT_ERROR: { status: 502, message: "上游返回格式暂不兼容，请联系管理员配置接口模板。" },
-      UPSTREAM_TIMEOUT: { status: 504, message: "上游查询超时，请稍后重试。" },
-      UPSTREAM_ABORTED: { status: 504, message: "上游请求被中止，请稍后重试。" },
-      INTERNAL_ERROR: { status: 500, message: "服务内部错误，请稍后重试。" },
+      MISSING_INPUT: { status: 400, message: "Missing input; provide an address or domain name." },
+      INVALID_INPUT: { status: 400, message: "Input is not a valid address or resolvable name." },
+      UNRESOLVABLE_NAME: { status: 400, message: "Name could not be resolved; try a raw address." },
+      RATE_LIMIT_IP: { status: 429, message: "Too many requests; try again later." },
+      RATE_LIMIT_ADDRESS: { status: 429, message: "Too many queries for this address; try again later." },
+      REDIS_UNAVAILABLE: { status: 503, message: "Rate limit store unavailable; try again later." },
+      MEMORY_EMPTY: { status: 400, message: "No remembered addresses." },
+      INVALID_BODY: { status: 400, message: "Invalid JSON body." },
+      UPSTREAM_HTTP_ERROR: { status: 502, message: "Upstream data error; try again later." },
+      UPSTREAM_RATE_LIMIT: { status: 429, message: "Upstream rate limited; try again later." },
+      UPSTREAM_FORMAT_ERROR: { status: 502, message: "Upstream response format not supported." },
+      UPSTREAM_TIMEOUT: { status: 504, message: "Upstream timeout; try again later." },
+      UPSTREAM_ABORTED: { status: 504, message: "Upstream request aborted; try again later." },
+      MCP_SESSION_MISSING: { status: 502, message: "MCP session could not be established." },
+      MCP_EMPTY_RESPONSE: { status: 502, message: "MCP returned an empty response." },
+      MCP_JSONRPC_ERROR: { status: 502, message: "MCP tool returned an error." },
+      MCP_RESPONSE_TOO_LARGE: { status: 502, message: "MCP response exceeded size limit." },
+      MCP_TOOL_ERROR: { status: 502, message: "MCP tool execution failed." },
+      INTERNAL_ERROR: { status: 500, message: "Internal error; try again later." },
     };
     const hit = map[code] || map.INTERNAL_ERROR;
     return res.status(hit.status).json(errorBody(code, hit.message, requestId));
