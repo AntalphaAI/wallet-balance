@@ -238,12 +238,43 @@ function isLikelyBtcAddress(input) {
   return /^(bc1[ac-hj-np-z02-9]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/.test(value);
 }
 
+/**
+ * Detect non-EVM chain from address format.
+ * Returns chainHint string or null if not recognized.
+ */
+function detectNonEvmChain(input) {
+  // Solana: base58, 32-44 chars, starts with [1-9A-HJ-NP-Za-km-z]
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(input)) return "solana";
+  // Tron: T + 33 base58 chars
+  if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(input)) return "tron";
+  // TON: EQ/UQ/kQ/0Q prefix
+  if (/^(EQ|UQ|kQ|0Q)[A-Za-z0-9_-]{46}$/.test(input)) return "ton";
+  // XRP: r-prefix, 25-34 base58 chars
+  if (/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(input)) return "xrp";
+  // Litecoin: L/M/m/ltc1 prefix
+  if (/^([LMm3][a-km-zA-HJ-NP-Z1-9]{26,33}|ltc1[a-z0-9]{39,59})$/.test(input)) return "litecoin";
+  // NEAR: account.near or 64-char hex
+  if (/^[a-zA-Z0-9._-]{2,64}\.near$/.test(input) || /^[0-9a-f]{64}$/.test(input)) return "near";
+  // Sui: 0x + exactly 64 hex chars
+  if (/^0x[0-9a-fA-F]{64}$/.test(input)) return "sui";
+  // Aptos: 0x + 1-64 hex chars (shorter than Sui, tested after)
+  if (/^0x[0-9a-fA-F]{1,63}$/.test(input)) return "aptos";
+  // Polkadot SS58: 46-48 base58 chars
+  if (/^[1-9A-HJ-NP-Za-km-z]{46,48}$/.test(input)) return "polkadot";
+  // Cardano: addr1 prefix
+  if (/^addr1[a-z0-9]{50,}$/.test(input)) return "cardano";
+  // Kaspa: kaspa: prefix
+  if (/^kaspa:[a-z0-9]{61,63}$/.test(input)) return "kaspa";
+  return null;
+}
+
 async function normalizeInput(inputRaw) {
   const input = String(inputRaw || "").trim();
   if (!input) {
     throw new Error("MISSING_INPUT");
   }
 
+  // EVM 0x address (40 hex chars)
   if (/^0x[a-fA-F0-9]{40}$/.test(input)) {
     return {
       normalizedAddress: ethers.getAddress(input),
@@ -252,6 +283,7 @@ async function normalizeInput(inputRaw) {
     };
   }
 
+  // Bitcoin
   if (isLikelyBtcAddress(input)) {
     return {
       normalizedAddress: input.toLowerCase().startsWith("bc1") ? input.toLowerCase() : input,
@@ -260,6 +292,7 @@ async function normalizeInput(inputRaw) {
     };
   }
 
+  // ENS / .eth
   if (input.toLowerCase().endsWith(".eth")) {
     const resolved = await ethProvider.resolveName(input);
     if (!resolved) throw new Error("UNRESOLVABLE_NAME");
@@ -270,12 +303,23 @@ async function normalizeInput(inputRaw) {
     };
   }
 
+  // .bnb
   if (input.toLowerCase().endsWith(".bnb")) {
     const resolved = await bnbProvider.resolveName(input);
     if (!resolved) throw new Error("UNRESOLVABLE_NAME");
     return {
       normalizedAddress: ethers.getAddress(resolved),
       chainHint: "evm",
+      sourceInput: input,
+    };
+  }
+
+  // Non-EVM chains (Solana, Tron, TON, XRP, LTC, NEAR, Sui, Aptos, Polkadot, Cardano, Kaspa)
+  const nonEvm = detectNonEvmChain(input);
+  if (nonEvm) {
+    return {
+      normalizedAddress: input,
+      chainHint: nonEvm,
       sourceInput: input,
     };
   }
@@ -840,9 +884,49 @@ async function fetchFromFallbackAggregation({ normalizedAddress, chainHint, sign
   };
 }
 
+/** Non-EVM chain hint → MCP tool name mapping */
+const NON_EVM_MCP_TOOL = {
+  solana:   "wallet-balance-solana",
+  tron:     "wallet-balance-tron",
+  ton:      "wallet-balance-ton",
+  xrp:      "wallet-balance-xrp",
+  litecoin: "wallet-balance-litecoin",
+  near:     "wallet-balance-near",
+  sui:      "wallet-balance-sui",
+  aptos:    "wallet-balance-aptos",
+  polkadot: "wallet-balance-polkadot",
+  cardano:  "wallet-balance-cardano",
+  kaspa:    "wallet-balance-kaspa",
+};
+
+/**
+ * Query a non-EVM chain via the wallet-balance MCP tools.
+ * Returns a normalised payload compatible with the EVM response shape.
+ */
+async function fetchFromNonEvmMcp({ normalizedAddress, chainHint, signal }) {
+  const toolName = NON_EVM_MCP_TOOL[chainHint];
+  if (!toolName) throw new Error("UNSUPPORTED_CHAIN");
+
+  const result = await mcpCallTool(toolName, { address: normalizedAddress }, signal);
+  // result is already a ChainBalance object: { chain, chain_id, tokens[] }
+  const chains = [result].filter((c) => Array.isArray(c.tokens) && c.tokens.length);
+  if (!chains.length) {
+    // Return empty chains (no balance) rather than error
+    chains.push({ chain: result.chain || chainHint, chain_id: result.chain_id || chainHint, tokens: [] });
+  }
+  return {
+    input: normalizedAddress,
+    address: normalizedAddress,
+    chains,
+    updated_at: new Date().toISOString(),
+    provider: `mcp-${toolName}`,
+  };
+}
+
 /**
  * EVM: try MCP multi-source-token-list first; on failure use public providers if enabled.
- * BTC: public providers only (MCP tool is EVM-only).
+ * BTC: public providers only (Blockstream).
+ * Non-EVM (SOL/TRX/TON/XRP/LTC/NEAR/SUI/APT/DOT/ADA/KAS): wallet-balance MCP tools.
  */
 async function buildAssetsPayload({ sourceInput, normalizedAddress, chainHint, bypassCache }) {
   let upstreamRaw;
@@ -854,6 +938,14 @@ async function buildAssetsPayload({ sourceInput, normalizedAddress, chainHint, b
       12000
     );
     dataSource = "public_only";
+  } else if (NON_EVM_MCP_TOOL[chainHint]) {
+    // Non-EVM chain: route to dedicated wallet-balance MCP tool
+    if (!ENABLE_MCP) throw new Error("NON_EVM_REQUIRES_MCP");
+    upstreamRaw = await withTimeout(
+      (signal) => fetchFromNonEvmMcp({ normalizedAddress, chainHint, signal }),
+      30000
+    );
+    dataSource = "mcp_non_evm";
   } else if (!ENABLE_MCP) {
     upstreamRaw = await withTimeout(
       (signal) => fetchFromFallbackAggregation({ normalizedAddress, chainHint, signal }),
@@ -1063,6 +1155,8 @@ app.get("/agent-skills/v1/assets", async (req, res) => {
       MCP_JSONRPC_ERROR: { status: 502, message: "MCP tool returned an error." },
       MCP_RESPONSE_TOO_LARGE: { status: 502, message: "MCP response exceeded size limit." },
       MCP_TOOL_ERROR: { status: 502, message: "MCP tool execution failed." },
+      NON_EVM_REQUIRES_MCP: { status: 503, message: "Non-EVM chain queries require MCP to be enabled." },
+      UNSUPPORTED_CHAIN: { status: 400, message: "Chain not supported." },
       INTERNAL_ERROR: { status: 500, message: "Internal error; try again later." },
     };
     const hit = map[code] || map.INTERNAL_ERROR;

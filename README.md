@@ -10,7 +10,10 @@ Multi-chain wallet balance skill for AI agents. Supports EVM chains (Ethereum, B
 
 ## Features
 
-- 🔍 **Multi-chain EVM + BTC** — supports **68+ chains** including Ethereum, BNB Chain, Base, Arbitrum, Optimism, Polygon, Avalanche, zkSync Era, Linea, Scroll, Blast, Berachain, Mantle, Sonic, and many more; plus Bitcoin
+- 🔍 **Multi-chain: EVM + Non-EVM + BTC** — supports **80+ chains**:
+  - **68+ EVM chains**: Ethereum, BNB Chain, Base, Arbitrum, Optimism, Polygon, Avalanche, zkSync Era, Linea, Scroll, Blast, Berachain, Mantle, Sonic, and more
+  - **11 Non-EVM chains**: Solana (SOL), Tron (TRX + TRC-20), TON, XRP, Litecoin (LTC), NEAR, Sui (SUI), Aptos (APT), Polkadot (DOT), Cardano (ADA), Kaspa (KAS)
+  - **Bitcoin (BTC)**: via Blockstream public API
 - 🤖 **MCP aggregation** — uses `multi-source-token-list` via Antalpha AI MCP for richer data
 - 🔄 **Auto fallback** — if MCP is unreachable, falls back to public RPC (Ethereum, BSC) + Blockstream (BTC) + CoinGecko pricing
 - 💾 **Address memory** — agents can remember addresses; say "check my balance" and all saved addresses are queried automatically
@@ -81,7 +84,10 @@ Exclude `node_modules`, `.env`, and `remembered-addresses.json` from distributab
 
 ## 功能特性
 
-- 🔍 **多链支持（EVM + BTC）** — 覆盖 *68+ 条链*，包括以太坊、BNB Chain、Base、Arbitrum、Optimism、Polygon、Avalanche、zkSync Era、Linea、Scroll、Blast、Berachain、Mantle、Sonic 等；同时支持比特币
+- 🔍 **多链支持（EVM + 非 EVM + BTC）** — 覆盖 *80+ 条链*：
+  - **68+ EVM 链**：以太坊、BNB Chain、Base、Arbitrum、Optimism、Polygon、Avalanche、zkSync Era、Linea、Scroll、Blast、Berachain、Mantle、Sonic 等
+  - **11 条非 EVM 链**：Solana (SOL)、Tron (TRX+TRC-20)、TON、XRP、Litecoin (LTC)、NEAR、Sui (SUI)、Aptos (APT)、Polkadot (DOT)、Cardano (ADA)、Kaspa (KAS)
+  - **Bitcoin (BTC)**：通过 Blockstream 公开 API 查询
 - 🤖 **MCP 聚合** — 通过 Antalpha AI MCP 调用 `multi-source-token-list`，数据更全
 - 🔄 **自动降级** — MCP 不可达时自动切换到公开 RPC（ETH/BSC）+ Blockstream（BTC）+ CoinGecko 报价
 - 💾 **地址记忆** — Agent 可记住钱包地址，用户说"查我的余额"即自动汇总所有已保存地址
