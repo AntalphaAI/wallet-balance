@@ -25,6 +25,12 @@ Multi-chain wallet balance skill for AI agents. Supports EVM chains (Ethereum, B
 openclaw skill install https://github.com/AntalphaAI/wallet-balance
 ```
 
+### Install via ClawHub
+
+```bash
+clawhub install wallet-balance
+```
+
 ## Quick Start
 
 ```bash
