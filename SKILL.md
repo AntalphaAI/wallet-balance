@@ -1,7 +1,7 @@
 ---
 name: "wallet balance"
 description: Multi-chain wallet balances (EVM + BTC). EVM addresses use the company MCP tool multi-source-token-list; on MCP failure the gateway falls back to public data. BTC uses public APIs only. Supports remembering addresses; when the user asks for a balance without a new address, query saved addresses. Use for balances, holdings, and valuations. Replies must use the same language as the user message.
-version: 1.2.2
+version: 1.3.0
 author: Antalpha
 metadata:
   requires:
@@ -104,7 +104,7 @@ The response has `query_mode: "memory"`, `results[]`, and `combined_total_usd`. 
 
 **Slack**: Markdown tables are fine. **Discord / WhatsApp**: if tables render poorly, repeat the four columns as separate lines per row.
 
-Package directory: `wallet-balance-1.2.0/` (alongside your workspace or under `~/.openclaw/workspace/skills/`).
+Package directory: `wallet-balance-1.3.0/` (alongside your workspace or under `~/.openclaw/workspace/skills/`).
 
 ## Output constraints
 

@@ -72,13 +72,17 @@ const COINGECKO_ID_FALLBACK_USD = {
   dai: 1,
 };
 
-/** Map MCP `chain` codes to display name and numeric chain_id where known */
+/** Map MCP `chain` codes to display name and numeric chain_id where known.
+ *  Covers all 68+ chains observed from the multi-source-token-list MCP tool.
+ *  Last updated: 2026-04-10 (v1.3.0)
+ */
 const CHAIN_CODE_TO_META = {
+  // ── Tier-1 EVM ──
   eth: { chain: "Ethereum", chain_id: 1 },
   ethereum: { chain: "Ethereum", chain_id: 1 },
-  bsc: { chain: "BSC", chain_id: 56 },
-  bnb: { chain: "BSC", chain_id: 56 },
-  "bnb chain": { chain: "BSC", chain_id: 56 },
+  bsc: { chain: "BNB Chain", chain_id: 56 },
+  bnb: { chain: "BNB Chain", chain_id: 56 },
+  "bnb chain": { chain: "BNB Chain", chain_id: 56 },
   base: { chain: "Base", chain_id: 8453 },
   arb: { chain: "Arbitrum", chain_id: 42161 },
   arbitrum: { chain: "Arbitrum", chain_id: 42161 },
@@ -88,24 +92,80 @@ const CHAIN_CODE_TO_META = {
   matic: { chain: "Polygon", chain_id: 137 },
   avax: { chain: "Avalanche", chain_id: 43114 },
   avalanche: { chain: "Avalanche", chain_id: 43114 },
-  ftm: { chain: "Fantom", chain_id: 250 },
-  fantom: { chain: "Fantom", chain_id: 250 },
-  cro: { chain: "Cronos", chain_id: 25 },
-  gnosis: { chain: "Gnosis", chain_id: 100 },
-  xdai: { chain: "Gnosis", chain_id: 100 },
+  // ── ZK Rollups ──
+  era: { chain: "zkSync Era", chain_id: 324 },
   zksync: { chain: "zkSync Era", chain_id: 324 },
   linea: { chain: "Linea", chain_id: 59144 },
+  scrl: { chain: "Scroll", chain_id: 534352 },
   scroll: { chain: "Scroll", chain_id: 534352 },
+  zora: { chain: "Zora Network", chain_id: 7777777 },
+  taiko: { chain: "Taiko", chain_id: 167000 },
+  zircuit: { chain: "Zircuit", chain_id: 48900 },
+  // ── OP Stack / Superchain ──
   blast: { chain: "Blast", chain_id: 81457 },
+  mode: { chain: "Mode", chain_id: 34443 },
   manta: { chain: "Manta Pacific", chain_id: 169 },
+  ink: { chain: "Ink", chain_id: 57073 },
+  soneium: { chain: "Soneium", chain_id: 1868 },
+  uni: { chain: "Unichain", chain_id: 130 },
+  lisk: { chain: "Lisk", chain_id: 1135 },
+  cyber: { chain: "Cyber", chain_id: 7560 },
+  bob: { chain: "BOB", chain_id: 60808 },
+  dbk: { chain: "DBK Chain", chain_id: 20482050 },
+  // ── Other L2/L3 ──
   metis: { chain: "Metis", chain_id: 1088 },
-  movr: { chain: "Moonriver", chain_id: 1285 },
-  mobm: { chain: "Moonbeam", chain_id: 1284 },
-  moonbeam: { chain: "Moonbeam", chain_id: 1284 },
+  mnt: { chain: "Mantle", chain_id: 5000 },
+  mantle: { chain: "Mantle", chain_id: 5000 },
+  opbnb: { chain: "opBNB", chain_id: 204 },
+  xlayer: { chain: "X Layer", chain_id: 196 },
+  merlin: { chain: "Merlin", chain_id: 4200 },
+  btr: { chain: "Bitlayer", chain_id: 200901 },
+  core: { chain: "Core", chain_id: 1116 },
+  // ── Alt-L1 EVM ──
+  ftm: { chain: "Fantom", chain_id: 250 },
+  fantom: { chain: "Fantom", chain_id: 250 },
+  sonic: { chain: "Sonic", chain_id: 146 },
+  cro: { chain: "Cronos", chain_id: 25 },
+  cronos: { chain: "Cronos", chain_id: 25 },
+  gnosis: { chain: "Gnosis", chain_id: 100 },
+  xdai: { chain: "Gnosis", chain_id: 100 },
   celo: { chain: "Celo", chain_id: 42220 },
   aurora: { chain: "Aurora", chain_id: 1313161554 },
   klay: { chain: "Kaia", chain_id: 8217 },
   klaytn: { chain: "Kaia", chain_id: 8217 },
+  movr: { chain: "Moonriver", chain_id: 1285 },
+  mobm: { chain: "Moonbeam", chain_id: 1284 },
+  moonbeam: { chain: "Moonbeam", chain_id: 1284 },
+  tlos: { chain: "Telos EVM", chain_id: 40 },
+  fuse: { chain: "Fuse", chain_id: 122 },
+  iotx: { chain: "IoTeX", chain_id: 4689 },
+  flr: { chain: "Flare", chain_id: 14 },
+  // ── New / Emerging ──
+  bera: { chain: "Berachain", chain_id: 80094 },
+  abs: { chain: "Abstract", chain_id: 2741 },
+  ape: { chain: "ApeChain", chain_id: 33139 },
+  sei: { chain: "Sei EVM", chain_id: 1329 },
+  story: { chain: "Story", chain_id: 1514 },
+  plume: { chain: "Plume", chain_id: 98866 },
+  gravity: { chain: "Gravity", chain_id: 1625 },
+  hyper: { chain: "HyperEVM", chain_id: 999 },
+  monad: { chain: "Monad Testnet", chain_id: 10143 },
+  megaeth: { chain: "MegaETH Testnet", chain_id: 6342 },
+  morph: { chain: "Morph", chain_id: 2818 },
+  katana: { chain: "Katana", chain_id: 747474 },
+  lens: { chain: "Lens Network", chain_id: 232 },
+  world: { chain: "World Chain", chain_id: 480 },
+  plasma: { chain: "Plasma", chain_id: 1559 },
+  orderly: { chain: "Orderly Network", chain_id: 291 },
+  ron: { chain: "Ronin", chain_id: 2020 },
+  dfk: { chain: "DFK Chain", chain_id: 53935 },
+  bb: { chain: "BounceBit", chain_id: 6001 },
+  ethlink: { chain: "ETHLink", chain_id: 16777648 },
+  frax: { chain: "Fraxtal", chain_id: 252 },
+  g0: { chain: "GravityAlpha", chain_id: 1625 },
+  tempo: { chain: "Tempo", chain_id: 16481 },
+  itze: { chain: "Itteza", chain_id: 2025 },
+  citrea: { chain: "Citrea Testnet", chain_id: 5115 },
 };
 
 function makeRequestId() {
@@ -450,7 +510,7 @@ async function mcpCallTool(toolName, toolArguments, signal) {
       params: {
         protocolVersion: "2024-11-05",
         capabilities: {},
-        clientInfo: { name: "wallet-balance-gateway", version: "1.2.0" },
+        clientInfo: { name: "wallet-balance-gateway", version: "1.3.0" },
       },
     }),
     signal,
@@ -500,11 +560,23 @@ function chainToNetworkSlug(chainName, chainId) {
   const n = String(chainName || "").toLowerCase();
   const id = chainId;
   if (id === 1 || (n.includes("ethereum") && !n.includes("classic"))) return "ethereum";
-  if (id === 56 || n === "bsc" || n.includes("binance") || n.includes("bnb smart")) return "bsc";
-  if (id === 8453 || n === "base" || n.includes("base")) return "base";
+  if (id === 56 || n === "bnb chain" || n === "bsc" || n.includes("binance") || n.includes("bnb smart")) return "bsc";
+  if (id === 8453 || n === "base") return "base";
   if (id === 42161 || n.includes("arbitrum")) return "arbitrum";
+  if (id === 10 || n === "optimism") return "optimism";
   if (id === 137 || n.includes("polygon")) return "polygon";
+  if (id === 43114 || n.includes("avalanche")) return "avalanche";
+  if (id === 324 || n.includes("zksync") || n.includes("zk sync era")) return "zksync_era";
+  if (id === 59144 || n === "linea") return "linea";
+  if (id === 534352 || n === "scroll") return "scroll";
+  if (id === 81457 || n === "blast") return "blast";
+  if (id === 5000 || n === "mantle") return "mantle";
+  if (id === 250 || n === "fantom") return "fantom";
+  if (id === 100 || n === "gnosis") return "gnosis";
+  if (id === 42220 || n === "celo") return "celo";
+  if (id === 8217 || n === "kaia") return "kaia";
   if (id === "btc-mainnet" || n.includes("bitcoin")) return "bitcoin";
+  // generic fallback: derive slug from chain name
   const slug = n.replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
   return slug || String(id ?? "unknown").toLowerCase();
 }
@@ -826,7 +898,7 @@ app.get("/healthz", async (_req, res) => {
     status: "ok",
     redis: redisReady ? "up" : "down",
     service: "wallet-balance-gateway",
-    version: "1.2.0",
+    version: "1.3.0",
     mcp_enabled: ENABLE_MCP,
     now: new Date().toISOString(),
   });
