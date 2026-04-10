@@ -257,8 +257,8 @@ function detectNonEvmChain(input) {
   if (/^[a-zA-Z0-9._-]{2,64}\.near$/.test(input) || /^[0-9a-f]{64}$/.test(input)) return "near";
   // Sui: 0x + exactly 64 hex chars
   if (/^0x[0-9a-fA-F]{64}$/.test(input)) return "sui";
-  // Aptos: 0x + 1-64 hex chars (shorter than Sui, tested after)
-  if (/^0x[0-9a-fA-F]{1,63}$/.test(input)) return "aptos";
+  // Aptos: 0x + 1-64 hex chars, but NOT 40 hex chars (which is EVM)
+  if (/^0x(?![0-9a-fA-F]{40}$)[0-9a-fA-F]{1,63}$/.test(input)) return "aptos";
   // Polkadot SS58: 46-48 base58 chars
   if (/^[1-9A-HJ-NP-Za-km-z]{46,48}$/.test(input)) return "polkadot";
   // Cardano: addr1 prefix
