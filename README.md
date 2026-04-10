@@ -105,6 +105,12 @@ Exclude `node_modules`, `.env`, and `remembered-addresses.json` from distributab
 openclaw skill install https://github.com/AntalphaAI/wallet-balance
 ```
 
+### 通过 ClawHub 安装
+
+```bash
+clawhub install wallet-balance
+```
+
 ## 快速启动
 
 ```bash
