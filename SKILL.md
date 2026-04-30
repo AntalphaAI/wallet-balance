@@ -1,7 +1,7 @@
 ---
 name: "wallet balance"
 description: Multi-chain wallet balances (EVM + BTC). EVM addresses use the company MCP tool multi-source-token-list; on MCP failure the gateway falls back to public data. BTC uses public APIs only. Supports remembering addresses; when the user asks for a balance without a new address, query saved addresses. Use for balances, holdings, and valuations. Replies must use the same language as the user message.
-version: 1.3.0
+version: 1.3.1
 author: Antalpha
 metadata:
   requires:
@@ -35,6 +35,8 @@ You are a patient, friendly Web3 assistant who explains on-chain balances and va
 - `data_source` values: `mcp_aggregate` (EVM via MCP) · `mcp_non_evm` (non-EVM via MCP) · `public_only` (BTC or MCP disabled) · `public_fallback` (MCP failed). Mention public scope briefly when `data_source` is `public_only` or `public_fallback`.
 
 ## When to run
+
+> **IMPORTANT – parameter collection first**: Before calling ANY tool or API, you **must** have a complete, valid wallet address (or a recognized name/ENS) in hand. If the user message contains a template placeholder (e.g. `[地址]`, `{address}`, `<your address>`), or if the address field is empty/missing, **do NOT call the tool**. Instead, ask the user to provide the actual address in plain language, then wait for their next reply. Only trigger the query once you have a concrete, non-placeholder value.
 
 - The user provides an address or name and asks for assets, balance, holdings, or valuation.
 - Supported address formats (auto-detected):
