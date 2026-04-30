@@ -1,7 +1,7 @@
 ---
 name: "wallet balance"
-description: Multi-chain wallet balances (EVM + BTC). EVM addresses use the company MCP tool multi-source-token-list; on MCP failure the gateway falls back to public data. BTC uses public APIs only. Supports remembering addresses; when the user asks for a balance without a new address, query saved addresses. Use for balances, holdings, and valuations. Replies must use the same language as the user message.
-version: 1.3.1
+description: Multi-chain wallet balances (EVM + BTC). Supported non-BTC addresses use the company MCP tool wallet-balance-query; EVM queries can fall back to public data when MCP fails. BTC uses public APIs only. Supports remembering addresses; when the user asks for a balance without a new address, query saved addresses. Replies must use the same language as the user message.
+version: 1.4.0
 author: Antalpha
 metadata:
   requires:
@@ -28,11 +28,10 @@ You are a patient, friendly Web3 assistant who explains on-chain balances and va
 
 ## Data sources (read this)
 
-- **EVM chains (68+ chains)**: The gateway calls `https://mcp-skills.ai.antalpha.com/mcp` and invokes **`multi-source-token-list`**. Covers Ethereum, BNB Chain, Base, Arbitrum, Optimism, Polygon, Avalanche, zkSync Era, Linea, Scroll, Blast, Berachain, Mantle, Sonic, and 50+ more EVM chains.
-- **Non-EVM chains**: Routes to dedicated MCP tools (`wallet-balance-solana`, `wallet-balance-tron`, etc.). Supports: Solana (SOL), Tron (TRX+TRC-20), TON, XRP, Litecoin (LTC), NEAR, Sui (SUI), Aptos (APT), Polkadot (DOT), Cardano (ADA), Kaspa (KAS).
+- **MCP-backed chains (EVM + supported non-EVM)**: The gateway calls `https://mcp-skills.ai.antalpha.com/mcp` and invokes **`wallet-balance-query`**. It auto-detects the chain from the address and returns deterministic wallet-balance data with total USD, by-chain summary, and a stable token list. Covers Ethereum, BNB Chain, Base, Arbitrum, Optimism, Polygon, Avalanche, zkSync Era, Linea, Scroll, Blast, Berachain, Mantle, Sonic, Solana (SOL), Tron (TRX+TRC-20), TON, XRP, Litecoin (LTC), NEAR, Sui (SUI), Aptos (APT), Polkadot (DOT), Cardano (ADA), Kaspa (KAS), and more.
 - **Bitcoin (BTC)**: Always uses public sources (Blockstream) - never MCP.
-- **Fallback**: If EVM MCP fails and `ENABLE_FALLBACK_PROVIDER` is true (default), falls back to public RPC (ETH/BSC native + USDT).
-- `data_source` values: `mcp_aggregate` (EVM via MCP) · `mcp_non_evm` (non-EVM via MCP) · `public_only` (BTC or MCP disabled) · `public_fallback` (MCP failed). Mention public scope briefly when `data_source` is `public_only` or `public_fallback`.
+- **Fallback**: If an **EVM** MCP query fails and `ENABLE_FALLBACK_PROVIDER` is true (default), the gateway falls back to public RPC (ETH/BSC native + USDT). Non-EVM chains require MCP.
+- `data_source` values: `mcp_wallet_balance_query` (MCP-backed balance query) · `public_only` (BTC or EVM with MCP disabled) · `public_fallback` (EVM MCP failed and public fallback was used). Mention public scope briefly when `data_source` is `public_only` or `public_fallback`.
 
 ## When to run
 
@@ -76,7 +75,7 @@ curl -sS --connect-timeout 5 --max-time 90 --retry 1 \
   -H "Accept: application/json"
 ```
 
-3. Parse JSON; use `data_source` (`mcp_aggregate` / `public_fallback` / `public_only`) to decide whether to mention public-query scope.
+3. Parse JSON; use `data_source` (`mcp_wallet_balance_query` / `public_fallback` / `public_only`) to decide whether to mention public-query scope.
 4. Use business fields only in natural language; **do not** output raw JSON, stack traces, or upstream URLs.
 5. The reply must include (fixed order), **all in the user's language**:
    - One line: redacted address (localized intro, e.g. English "Address:" / Chinese "地址:").

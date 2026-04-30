@@ -23,7 +23,7 @@ const ETH_RPC_URL = process.env.ETH_RPC_URL || "https://ethereum-rpc.publicnode.
 const BNB_RPC_URL = process.env.BNB_RPC_URL || "https://bsc-rpc.publicnode.com";
 
 const MCP_SKILLS_URL = (process.env.MCP_SKILLS_URL || "https://mcp-skills.ai.antalpha.com/mcp").trim();
-const MCP_TOOL_NAME = (process.env.MCP_TOOL_NAME || "multi-source-token-list").trim();
+const MCP_TOOL_NAME = (process.env.MCP_TOOL_NAME || "wallet-balance-query").trim();
 const MCP_API_KEY = (process.env.MCP_API_KEY || "").trim();
 const ENABLE_MCP = (process.env.ENABLE_MCP || "true").toLowerCase() === "true";
 const ENABLE_FALLBACK_PROVIDER = (process.env.ENABLE_FALLBACK_PROVIDER || "true").toLowerCase() === "true";
@@ -73,7 +73,7 @@ const COINGECKO_ID_FALLBACK_USD = {
 };
 
 /** Map MCP `chain` codes to display name and numeric chain_id where known.
- *  Covers all 68+ chains observed from the multi-source-token-list MCP tool.
+ *  Covers common EVM chain codes returned by wallet-balance-query.
  *  Last updated: 2026-04-10 (v1.3.0)
  */
 const CHAIN_CODE_TO_META = {
@@ -243,8 +243,6 @@ function isLikelyBtcAddress(input) {
  * Returns chainHint string or null if not recognized.
  */
 function detectNonEvmChain(input) {
-  // Solana: base58, 32-44 chars, starts with [1-9A-HJ-NP-Za-km-z]
-  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(input)) return "solana";
   // Tron: T + 33 base58 chars
   if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(input)) return "tron";
   // TON: EQ/UQ/kQ/0Q prefix
@@ -265,6 +263,8 @@ function detectNonEvmChain(input) {
   if (/^addr1[a-z0-9]{50,}$/.test(input)) return "cardano";
   // Kaspa: kaspa: prefix
   if (/^kaspa:[a-z0-9]{61,63}$/.test(input)) return "kaspa";
+  // Solana: broad base58 fallback, kept last so more specific chains win first
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(input)) return "solana";
   return null;
 }
 
@@ -394,20 +394,27 @@ async function filterDustTokensAsync(response) {
 
   let total = new Decimal(0);
   for (const chain of copy.chains || []) {
-    chain.tokens = (chain.tokens || [])
-      .map((t) => {
-        const symbol = String(t?.symbol || "").toUpperCase();
-        const rough = roughPrices[symbol];
-        try {
-          if (rough && rough.gt(0) && new Decimal(t.value_usd || 0).lte(0)) {
-            const amount = new Decimal(t.amount || 0);
-            return { ...t, value_usd: amount.mul(rough).toFixed(2), estimated_usd: true };
-          }
-        } catch {
-          // ignore parse errors
+    const normalizedTokens = (chain.tokens || []).map((t) => {
+      const symbol = String(t?.symbol || "").toUpperCase();
+      const rough = roughPrices[symbol];
+      try {
+        if (rough && rough.gt(0) && new Decimal(t.value_usd || 0).lte(0)) {
+          const amount = new Decimal(t.amount || 0);
+          return { ...t, value_usd: amount.mul(rough).toFixed(2), estimated_usd: true };
         }
-        return t;
-      })
+      } catch {
+        // ignore parse errors
+      }
+      return t;
+    });
+    for (const token of normalizedTokens) {
+      try {
+        total = total.plus(new Decimal(token.value_usd || 0));
+      } catch {
+        // ignore parse errors
+      }
+    }
+    chain.tokens = normalizedTokens
       .filter((t) => {
         try {
           return new Decimal(t.value_usd || 0).gte(1);
@@ -418,7 +425,6 @@ async function filterDustTokensAsync(response) {
       .sort((a, b) => new Decimal(b.value_usd || 0).cmp(new Decimal(a.value_usd || 0)));
     const networkSlug = chainToNetworkSlug(chain.chain, chain.chain_id);
     for (const token of chain.tokens) {
-      total = total.plus(new Decimal(token.value_usd || 0));
       token.token_kind = inferTokenKind(chain.chain, token.symbol, token);
       token.network = networkSlug;
       try {
@@ -554,7 +560,7 @@ async function mcpCallTool(toolName, toolArguments, signal) {
       params: {
         protocolVersion: "2024-11-05",
         capabilities: {},
-        clientInfo: { name: "wallet-balance-gateway", version: "1.3.0" },
+        clientInfo: { name: "wallet-balance-gateway", version: "1.4.0" },
       },
     }),
     signal,
@@ -652,36 +658,68 @@ function normalizeNativeToken(symbol, amount, valueUsd) {
   };
 }
 
-function mcpTokensToChains(inner) {
+function decimalFromUnknown(value, fallback = "0") {
+  try {
+    return new Decimal(value ?? fallback);
+  } catch {
+    return new Decimal(fallback);
+  }
+}
+
+function normalizeMcpChainMeta(rawChain, rawChainId, chainSummaryMap) {
+  const raw = String(rawChain || "").trim();
+  const summary = raw ? chainSummaryMap.get(raw) : null;
+  const meta = metaForChainCode(raw || summary?.chain_id || rawChainId);
+  const knownCode = raw && CHAIN_CODE_TO_META[raw.toLowerCase()];
+  return {
+    chain: summary?.displayChain || meta.chain,
+    chain_id: knownCode ? meta.chain_id : (summary?.chain_id ?? rawChainId ?? meta.chain_id),
+  };
+}
+
+function mcpWalletBalanceToChains(inner) {
   const rows = Array.isArray(inner?.tokens) ? inner.tokens : [];
   const limited = rows.length > MCP_MAX_TOKEN_ROWS ? rows.slice(0, MCP_MAX_TOKEN_ROWS) : rows;
   const byKey = new Map();
+  const chainSummaryMap = new Map();
 
-  for (const t of limited) {
-    const meta = metaForChainCode(t.chain);
-    const chainKey = `${meta.chain}::${meta.chain_id}`;
-    const symbolRaw = t.optimized_symbol || t.display_symbol || t.symbol || "UNKNOWN";
-    const symbol = String(symbolRaw).trim() || "UNKNOWN";
-    let amount;
-    let price;
-    try {
-      amount = new Decimal(t.amount ?? 0);
-    } catch {
-      continue;
+  if (Array.isArray(inner?.by_chain)) {
+    for (const summary of inner.by_chain) {
+      const rawChain = String(summary?.chain || "").trim();
+      if (!rawChain) continue;
+      const meta = metaForChainCode(rawChain);
+      chainSummaryMap.set(rawChain, {
+        chain_id: summary?.chain_id ?? meta.chain_id,
+        displayChain: meta.chain,
+      });
     }
-    try {
-      price = new Decimal(t.price ?? 0);
-    } catch {
-      continue;
-    }
-    const valueUsd = amount.mul(price);
-    if (!byKey.has(chainKey)) {
-      byKey.set(chainKey, { chain: meta.chain, chain_id: meta.chain_id, tokens: [] });
-    }
-    byKey.get(chainKey).tokens.push(normalizeToken(symbol, amount.toFixed(), valueUsd.toFixed(2)));
   }
 
-  const chains = [...byKey.values()].filter((c) => c.tokens.length);
+  for (const t of limited) {
+    const rawChain = String(t?.chain ?? inner?.chain ?? "").trim();
+    const { chain, chain_id } = normalizeMcpChainMeta(rawChain, t?.chain_id, chainSummaryMap);
+    const chainKey = `${chain}::${chain_id}`;
+    const symbolRaw = t?.optimized_symbol || t?.display_symbol || t?.symbol || "UNKNOWN";
+    const symbol = String(symbolRaw).trim() || "UNKNOWN";
+    const amount = decimalFromUnknown(t?.balance ?? t?.amount ?? 0);
+    const explicitValue = t?.value_usd;
+    const derivedValue = amount.mul(decimalFromUnknown(t?.price_usd ?? t?.price ?? 0));
+    const valueUsd = decimalFromUnknown(explicitValue ?? derivedValue.toFixed(2));
+    const token = t?.is_native
+      ? normalizeNativeToken(symbol, amount.toFixed(), valueUsd.toFixed(2))
+      : normalizeToken(symbol, amount.toFixed(), valueUsd.toFixed(2));
+
+    if (!byKey.has(chainKey)) {
+      byKey.set(chainKey, { chain, chain_id, tokens: [] });
+    }
+    byKey.get(chainKey).tokens.push(token);
+  }
+
+  let chains = [...byKey.values()].filter((c) => c.tokens.length);
+  if (!chains.length && inner?.chain && inner?.chain_id != null) {
+    const { chain, chain_id } = normalizeMcpChainMeta(inner.chain, inner.chain_id, chainSummaryMap);
+    chains = [{ chain, chain_id, tokens: [] }];
+  }
   if (!chains.length) {
     throw new Error("UPSTREAM_FORMAT_ERROR");
   }
@@ -690,13 +728,15 @@ function mcpTokensToChains(inner) {
 
 async function fetchFromMcpAggregation({ normalizedAddress, signal }) {
   const inner = await mcpCallTool(MCP_TOOL_NAME, { address: normalizedAddress }, signal);
-  const chains = mcpTokensToChains(inner);
+  const chains = mcpWalletBalanceToChains(inner);
   return {
     input: normalizedAddress,
     address: normalizedAddress,
     chains,
+    total_usd: toDecimalText(inner?.total_value_usd || 0),
+    chain_scope: inner?.chain_scope || "unknown",
     updated_at: new Date().toISOString(),
-    provider: "mcp-multi-source-token-list",
+    provider: "mcp-wallet-balance-query",
   };
 }
 
@@ -786,7 +826,10 @@ async function mergeEvmNativeFromRpc(chainHint, normalizedAddress, response) {
   const bnbUsdVal = bnbAmt.mul(bnbUsd);
 
   const isEthChain = (c) => c?.chain_id === 1 || String(c?.chain || "").toLowerCase() === "ethereum";
-  const isBscChain = (c) => c?.chain_id === 56 || String(c?.chain || "").toLowerCase() === "bsc";
+  const isBscChain = (c) => {
+    const chainName = String(c?.chain || "").toLowerCase();
+    return c?.chain_id === 56 || chainName === "bsc" || chainName === "bnb chain" || chainName.includes("binance");
+  };
 
   const upsertNative = (chain, symbol, amount, usd) => {
     if (!chain) return;
@@ -805,7 +848,7 @@ async function mergeEvmNativeFromRpc(chainHint, normalizedAddress, response) {
 
   let bscChain = response.chains.find(isBscChain);
   if (!bscChain) {
-    bscChain = { chain: "BSC", chain_id: 56, tokens: [] };
+    bscChain = { chain: "BNB Chain", chain_id: 56, tokens: [] };
     response.chains.push(bscChain);
   }
   upsertNative(bscChain, "BNB", bnbAmt, bnbUsdVal);
@@ -866,7 +909,7 @@ async function fetchFromFallbackAggregation({ normalizedAddress, chainHint, sign
     });
     const bscUsdt = await fetchErc20BalanceSafe(bnbProvider, ERC20_TRACKED.BSC[0].address, normalizedAddress);
     chains.push({
-      chain: "BSC",
+      chain: "BNB Chain",
       chain_id: 56,
       tokens: [
         normalizeNativeToken("BNB", bnbAmount.toFixed(8), bnbAmount.mul(bnbUsd).toFixed(2)),
@@ -884,49 +927,10 @@ async function fetchFromFallbackAggregation({ normalizedAddress, chainHint, sign
   };
 }
 
-/** Non-EVM chain hint → MCP tool name mapping */
-const NON_EVM_MCP_TOOL = {
-  solana:   "wallet-balance-solana",
-  tron:     "wallet-balance-tron",
-  ton:      "wallet-balance-ton",
-  xrp:      "wallet-balance-xrp",
-  litecoin: "wallet-balance-litecoin",
-  near:     "wallet-balance-near",
-  sui:      "wallet-balance-sui",
-  aptos:    "wallet-balance-aptos",
-  polkadot: "wallet-balance-polkadot",
-  cardano:  "wallet-balance-cardano",
-  kaspa:    "wallet-balance-kaspa",
-};
-
 /**
- * Query a non-EVM chain via the wallet-balance MCP tools.
- * Returns a normalised payload compatible with the EVM response shape.
- */
-async function fetchFromNonEvmMcp({ normalizedAddress, chainHint, signal }) {
-  const toolName = NON_EVM_MCP_TOOL[chainHint];
-  if (!toolName) throw new Error("UNSUPPORTED_CHAIN");
-
-  const result = await mcpCallTool(toolName, { address: normalizedAddress }, signal);
-  // result is already a ChainBalance object: { chain, chain_id, tokens[] }
-  const chains = [result].filter((c) => Array.isArray(c.tokens) && c.tokens.length);
-  if (!chains.length) {
-    // Return empty chains (no balance) rather than error
-    chains.push({ chain: result.chain || chainHint, chain_id: result.chain_id || chainHint, tokens: [] });
-  }
-  return {
-    input: normalizedAddress,
-    address: normalizedAddress,
-    chains,
-    updated_at: new Date().toISOString(),
-    provider: `mcp-${toolName}`,
-  };
-}
-
-/**
- * EVM: try MCP multi-source-token-list first; on failure use public providers if enabled.
+ * EVM + supported non-BTC chains: try wallet-balance-query first.
  * BTC: public providers only (Blockstream).
- * Non-EVM (SOL/TRX/TON/XRP/LTC/NEAR/SUI/APT/DOT/ADA/KAS): wallet-balance MCP tools.
+ * Non-EVM chains require MCP; only EVM can fall back to public providers.
  */
 async function buildAssetsPayload({ sourceInput, normalizedAddress, chainHint, bypassCache }) {
   let upstreamRaw;
@@ -938,15 +942,8 @@ async function buildAssetsPayload({ sourceInput, normalizedAddress, chainHint, b
       12000
     );
     dataSource = "public_only";
-  } else if (NON_EVM_MCP_TOOL[chainHint]) {
-    // Non-EVM chain: route to dedicated wallet-balance MCP tool
-    if (!ENABLE_MCP) throw new Error("NON_EVM_REQUIRES_MCP");
-    upstreamRaw = await withTimeout(
-      (signal) => fetchFromNonEvmMcp({ normalizedAddress, chainHint, signal }),
-      30000
-    );
-    dataSource = "mcp_non_evm";
   } else if (!ENABLE_MCP) {
+    if (chainHint !== "evm") throw new Error("NON_EVM_REQUIRES_MCP");
     upstreamRaw = await withTimeout(
       (signal) => fetchFromFallbackAggregation({ normalizedAddress, chainHint, signal }),
       12000
@@ -958,9 +955,9 @@ async function buildAssetsPayload({ sourceInput, normalizedAddress, chainHint, b
         (signal) => fetchFromMcpAggregation({ normalizedAddress, signal }),
         90000
       );
-      dataSource = "mcp_aggregate";
+      dataSource = "mcp_wallet_balance_query";
     } catch (e) {
-      if (!ENABLE_FALLBACK_PROVIDER) throw e;
+      if (chainHint !== "evm" || !ENABLE_FALLBACK_PROVIDER) throw e;
       upstreamRaw = await withTimeout(
         (signal) => fetchFromFallbackAggregation({ normalizedAddress, chainHint, signal }),
         12000
@@ -990,7 +987,7 @@ app.get("/healthz", async (_req, res) => {
     status: "ok",
     redis: redisReady ? "up" : "down",
     service: "wallet-balance-gateway",
-    version: "1.3.0",
+    version: "1.4.0",
     mcp_enabled: ENABLE_MCP,
     now: new Date().toISOString(),
   });
