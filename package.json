@@ -1,7 +1,7 @@
 {
   "name": "wallet-balance-gateway",
-  "version": "1.2.0",
-  "description": "Wallet balance skill gateway (EVM + BTC); MCP multi-source-token-list with public-network fallback and address memory.",
+  "version": "1.4.0",
+  "description": "Wallet balance skill gateway (multi-chain + BTC); MCP wallet-balance-query with deterministic balance summaries, EVM public fallback, and address memory.",
   "main": "server.js",
   "type": "module",
   "scripts": {
