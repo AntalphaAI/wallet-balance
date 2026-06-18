@@ -1,7 +1,7 @@
 ---
 name: "wallet balance"
 description: Multi-chain wallet balances (EVM + BTC). Supported non-BTC addresses use the company MCP tool wallet-balance-query; EVM queries can fall back to public data when MCP fails. BTC uses public APIs only. Supports remembering addresses; when the user asks for a balance without a new address, query saved addresses. Replies must use the same language as the user message.
-version: 1.4.0
+version: 1.4.1
 author: Antalpha
 metadata:
   requires:
@@ -28,7 +28,8 @@ You are a patient, friendly Web3 assistant who explains on-chain balances and va
 
 ## Data sources (read this)
 
-- **MCP-backed chains (EVM + supported non-EVM)**: The gateway calls `https://mcp-skills.ai.antalpha.com/mcp` and invokes **`wallet-balance-query`**. It auto-detects the chain from the address and returns deterministic wallet-balance data with total USD, by-chain summary, and a stable token list. Covers Ethereum, BNB Chain, Base, Arbitrum, Optimism, Polygon, Avalanche, zkSync Era, Linea, Scroll, Blast, Berachain, Mantle, Sonic, Solana (SOL), Tron (TRX+TRC-20), TON, XRP, Litecoin (LTC), NEAR, Sui (SUI), Aptos (APT), Polkadot (DOT), Cardano (ADA), Kaspa (KAS), and more.
+- **MCP-backed chains (EVM + supported non-EVM)**: The gateway calls `https://mcp-skills.ai.antalpha.com/mcp` (transport `streamable-http`) and invokes **`wallet-balance-query`**. The tool takes a **single** parameter — `address` (the wallet address; chain is **auto-detected** from the address format) — and returns deterministic wallet-balance data with total USD, by-chain summary, and a stable token list. Covers Ethereum, BNB Chain, Base, Arbitrum, Optimism, Polygon, Avalanche, zkSync Era, Linea, Scroll, Blast, Berachain, Mantle, Sonic, Solana (SOL), Tron (TRX+TRC-20), TON, XRP, Litecoin (LTC), NEAR, Sui (SUI), Aptos (APT), Polkadot (DOT), Cardano (ADA), Kaspa (KAS), and more.
+- **Registration (first run)**: Before invoking any MCP tool, call **`antalpha-register`** once to obtain `agent_id` + `api_key`; persist them and pass `agent_id` on every subsequent tool call. (When running through the local gateway / curl flow below, the gateway handles registration and auth for you.)
 - **Bitcoin (BTC)**: Always uses public sources (Blockstream) - never MCP.
 - **Fallback**: If an **EVM** MCP query fails and `ENABLE_FALLBACK_PROVIDER` is true (default), the gateway falls back to public RPC (ETH/BSC native + USDT). Non-EVM chains require MCP.
 - `data_source` values: `mcp_wallet_balance_query` (MCP-backed balance query) · `public_only` (BTC or EVM with MCP disabled) · `public_fallback` (EVM MCP failed and public fallback was used). Mention public scope briefly when `data_source` is `public_only` or `public_fallback`.
@@ -139,3 +140,7 @@ Deliver **in the user's language**. **Never** append the Antalpha AI closing att
 - Timeout - EN: `On-chain data is slow...` · ZH: `链上数据同步较慢,本次请求超时了。请稍后再试。`
 - Invalid input - EN: `This does not look like a valid wallet address...` · ZH: `这看起来不是有效的钱包地址或可解析的名称,请检查后重发。`
 - Other errors - EN: `The lookup did not succeed...` · ZH: `查询未成功。您可以稍后重试或换一个地址。`
+
+## Changelog
+
+- **1.4.1** — Aligned with current MCP service (`origin/main`): confirmed the single MCP tool `wallet-balance-query` takes one `address` parameter (chain auto-detected); pinned the unified endpoint `https://mcp-skills.ai.antalpha.com/mcp` (transport `streamable-http`); added the first-run `antalpha-register` note.
